@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import dagre from 'dagre';
-import ReactFlow, { Background, Controls } from 'reactflow';
+import ReactFlow, { Background, Controls, MarkerType } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { getLayoutedElements } from './layout';
+import DiamondNode from './components/DiamondNode'; // adjust path if needed
 
 async function getFlowFromTranscript(transcript) {
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -43,6 +44,9 @@ async function getFlowFromTranscript(transcript) {
         Respond ONLY with valid JSON like:
         { "nodes": [...], "edges": [...], "type": [...]}
         Remove the "json" text at the start if there is any
+        For decision nodes, give this format please
+        { "source": <decisionNodeId>, "target": <yesOutcomeNodeId>, "sourceHandle": "yes", "label": "Yes" }
+        { "source": <decisionNodeId>, "target": <noOutcomeNodeId>, "sourceHandle": "no", "label": "No" }
 
         Do NOT include position fields. Only provide: id, data.label, type (optional), and edge info.
         Positioning will be handled separately.
@@ -89,10 +93,12 @@ function StickyNoteNode({ data }) {
 export default function App() {
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
-  const [input, setInput] = useState("User logs in. System checks credentials. If valid, show dashboard. If not, show error.");
+  const [input, setInput] = useState("User logs in. System checks credentials. If valid, show dashboard. If not, show error. Remember to finish it by this weekend");
 
   const nodeTypes = {
     sticky: StickyNoteNode,
+    note: StickyNoteNode,
+    decision: DiamondNode,
   };
 
   const handleSubmit = async () => {
@@ -134,14 +140,15 @@ export default function App() {
       .map((e) => ({
         ...e,
         type: 'smoothstep',
-        label: e.label, // GPT should include 'Yes' or 'No'
-        style: { fontSize: 12, fontWeight: 'bold' },
+        label: e.label,
+        sourceHandle: e.sourceHandle || undefined,  // 👈 preserve sourceHandle if provided
+        markerEnd: { type: MarkerType.ArrowClosed },
       }));
 
     const styledNodes = cleanedNodes.map((node) => {
       const baseStyle = {
         border: '1px solid #999',
-        borderRadius: 8,
+        borderRadius: 20,
         padding: 10,
         fontSize: '14px',
         textAlign: 'center',
@@ -167,14 +174,17 @@ export default function App() {
               backgroundColor: '#e7f1ff', // soft blue
             },
           };
-    
         case 'decision':
           return {
             ...node,
-            style: {
-              ...baseStyle,
-              backgroundColor: '#fff3cd', // soft yellow
-            },
+            // No style needed — handled in DiamondNode
+          };
+    
+        case 'note':
+        case 'sticky':
+          return {
+            ...node,
+            // No style needed — handled in StickyNoteNode
           };
     
         default:
