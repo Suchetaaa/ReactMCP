@@ -44,9 +44,10 @@ async function getFlowFromTranscript(transcript) {
         Respond ONLY with valid JSON like:
         { "nodes": [...], "edges": [...], "type": [...]}
         Remove the "json" text at the start if there is any
-        For decision nodes, give this format please
-        { "source": <decisionNodeId>, "target": <yesOutcomeNodeId>, "sourceHandle": "yes", "label": "Yes" }
-        { "source": <decisionNodeId>, "target": <noOutcomeNodeId>, "sourceHandle": "no", "label": "No" }
+        
+        For decision box, use following format to output for each path:
+        { "source": <decisionNodeId>, "target": <yesOutcomeNodeId>, "sourceHandle": "left", "label": "Yes" }
+        { "source": <decisionNodeId>, "target": <noOutcomeNodeId>, "sourceHandle": "right", "label": "No" }
 
         Do NOT include position fields. Only provide: id, data.label, type (optional), and edge info.
         Positioning will be handled separately.
@@ -98,7 +99,6 @@ export default function App() {
   const nodeTypes = {
     sticky: StickyNoteNode,
     note: StickyNoteNode,
-    decision: DiamondNode,
   };
 
   const handleSubmit = async () => {
@@ -177,6 +177,9 @@ export default function App() {
         case 'decision':
           return {
             ...node,
+            style: {
+              borderRadius: '60%',
+            }
             // No style needed — handled in DiamondNode
           };
     
