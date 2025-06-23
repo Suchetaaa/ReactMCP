@@ -3,14 +3,16 @@ import dagre from 'dagre';
 import ReactFlow, { Background, Controls, MarkerType } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { getLayoutedElements } from './layout';
+
 import DiamondNode from './components/DiamondNode'; // adjust path if needed
 
 async function getFlowFromTranscript(transcript) {
+  const apiKey = import.meta.env.VITE_OPEN_API_KEY;
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer YOUR_OPEN_API_KEY`,  // 🔑 REPLACE THIS
+      'Authorization': `Bearer ${apiKey}`,  // 🔑 REPLACE THIS
     },
     body: JSON.stringify({
       model: 'gpt-4o',
