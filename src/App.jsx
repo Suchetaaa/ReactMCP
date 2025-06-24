@@ -1,18 +1,21 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import dagre from 'dagre';
 import ReactFlow, { Background, Controls, MarkerType } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { getLayoutedElements } from './layout';
+import DiamondNode from './components/DiamondNode';
 
-import DiamondNode from './components/DiamondNode'; // adjust path if needed
-
-async function getFlowFromTranscript(transcript) {
+/* ------------------------------------------------------------------ */
+/* GPT call – now receives (chunk, context, currentFlow)              */
+/* ------------------------------------------------------------------ */
+async function extendFlowWithChunk({ chunk, context, currentFlow }) {
   const apiKey = import.meta.env.VITE_OPEN_API_KEY;
+
   const response = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,  // 🔑 REPLACE THIS
+      Authorization: `Bearer ${apiKey}`,
     },
     body: JSON.stringify({
       model: 'gpt-4o',
@@ -21,6 +24,14 @@ async function getFlowFromTranscript(transcript) {
         {
           role: 'system',
           content: `
+        You are an AI assistant that extends an existing React-Flow diagram. If the existing flow is empty, you will create a new flow based on the chunk provided.
+        RULES:
+        • The JSON in "existingFlow" is final—do NOT change or delete anything inside it.
+        • Only add new nodes / edges that represent info in the newChunk.
+        • Make sure every new node is connected; no isolates.
+        • Respond with all nodes and edges, including existing ones, but don't change the structure of existing nodes/edges.
+        Remove any “json” preamble.
+
         You are an AI assistant that extracts logical process flows from messy meeting transcripts or conversations.
         
         Your task is to:
@@ -30,7 +41,7 @@ async function getFlowFromTranscript(transcript) {
         - Use conditional logic like “If X, then Y”
         - Make it suitable for flowchart generation
         - Then convert that list into a React Flow diagram
-        - You may include optional sticky notes using a node with type: \"sticky\" for non-process comments or tips.
+        - You may include optional sticky notes using a node with type: "sticky"for non-process comments or tips.
 
         Parse the transcript into structured JSON with "type" for each block:
         Make sure every node has a "type" field — do not leave it blank.
@@ -55,177 +66,140 @@ async function getFlowFromTranscript(transcript) {
         Positioning will be handled separately.
         
         Do not include any explanations, markdown, or code comments.
-            `
+`,
         },
         {
           role: 'user',
-          content: transcript
-        }
-      ]
-    })
+          content: JSON.stringify({
+            existingFlow: currentFlow,   // ← what’s already on screen
+            contextSoFar: context,       // ← full transcript until now
+            newChunk: chunk,             // ← just-received audio slice
+          }),
+        },
+      ],
+    }),
   });
 
   const data = await response.json();
-  try {
-    console.log("GPT raw response:", data.choices[0].message.content);
-    return JSON.parse(data.choices[0].message.content);
-  } catch {
-    return { nodes: [], edges: [], type: [] };
-  }
+  return JSON.parse(data.choices[0].message.content); // only NEW nodes/edges
 }
 
+/* ------------------------------------------------------------------ */
+/* Sticky-note component                                               */
+/* ------------------------------------------------------------------ */
 function StickyNoteNode({ data }) {
   return (
-    <div
-      style={{
-        background: '#FFF176',
-        padding: 12,
-        fontSize: 14,
-        fontFamily: 'Comic Sans MS',
-        borderRadius: 6,
-        minWidth: 150,
-        boxShadow: '2px 2px 8px rgba(0,0,0,0.15)',
-      }}
-    >
-      📌 {data.label}
-    </div>
+      <div
+          style={{
+            background: '#FFF176',
+            padding: 12,
+            fontSize: 14,
+            fontFamily: 'Comic Sans MS',
+            borderRadius: 6,
+            minWidth: 150,
+            boxShadow: '2px 2px 8px rgba(0,0,0,0.15)',
+          }}>
+        📌 {data.label}
+      </div>
   );
 }
 
-
+/* ------------------------------------------------------------------ */
+/* Main component                                                      */
+/* ------------------------------------------------------------------ */
 export default function App() {
+  /* ------ diagram & transcript state ------ */
   const [nodes, setNodes] = useState([]);
   const [edges, setEdges] = useState([]);
-  const [input, setInput] = useState("User logs in. System checks credentials. If valid, show dashboard. If not, show error. Remember to finish it by this weekend");
+  const [context, setContext] = useState(''); // ← running transcript
 
-  const nodeTypes = {
-    sticky: StickyNoteNode,
-    note: StickyNoteNode,
-  };
+  const nodeTypes = { sticky: StickyNoteNode, note: StickyNoteNode };
 
-  const handleSubmit = async () => {
-    const flow = await getFlowFromTranscript(input);
+  /* ------ helper: style new nodes just like before ------ */
+  const styleNodes = useCallback((incoming) =>
+      incoming.map((node) => {
+        const base = {
+          border: '1px solid #999',
+          borderRadius: 20,
+          padding: 10,
+          fontSize: 14,
+          textAlign: 'center',
+        };
+        switch (node.type) {
+          case 'start':
+          case 'end':
+            return { ...node, style: { ...base, background: '#d1e7dd', borderRadius: 30 } };
+          case 'process':
+            return { ...node, style: { ...base, background: '#e7f1ff' } };
+          case 'decision':
+            return { ...node }; // rendered via DiamondNode
+          default:
+            return { ...node, style: { ...base, background: '#f0e5ff' } };
+        }
+      }), []);
 
-    // 🧠 Validate the response structure
-    if (!flow.nodes || !flow.edges) {
-      alert("GPT response is missing nodes or edges!");
-      return;
-    }
+  /* ------ ingest one audio chunk ------ */
+  const handleChunk = async (chunk) => {
+    // 1️⃣ grow the running transcript immediately
+    setContext((prev) => prev + ' ' + chunk);
 
-    // 🧪 Optional: Warn if any node is not connected to the graph
-    const nodeIds = new Set(flow.nodes.map(n => n.id));
-    const danglingNodes = flow.nodes.filter(
-      node => !flow.edges.some(edge =>
-        edge.source === node.id || edge.target === node.id
-      )
+    // 2️⃣ ask GPT to *extend* the current flow
+    const increment = await extendFlowWithChunk({
+      chunk,
+      context: context + ' ' + chunk,   // ← include the just-added words too
+      currentFlow: { nodes, edges },
+    });
+
+    // 3️⃣ merge: ignore ids we already have, add only new stuff
+    const existingIds = new Set(nodes.map((n) => n.id));
+    const newNodes = styleNodes(
+        increment.nodes.filter((n) => !existingIds.has(n.id))
     );
 
-    if (danglingNodes.length > 0) {
-      console.warn("⚠️ Unconnected nodes:", danglingNodes.map(n => n.id));
-      alert(`Warning: ${danglingNodes.length} node(s) are unconnected.`);
-    }
-    const cleanedNodes = flow.nodes.map((n) => {
-      const { position, ...rest } = n;
-      return rest;
-    });
+    const seenEdge = new Set(edges.map((e) => `${e.source}-${e.target}`));
+    const newEdges = increment.edges
+        .filter((e) => !seenEdge.has(`${e.source}-${e.target}`))
+        .map((e) => ({
+          ...e,
+          type: 'smoothstep',
+          markerEnd: { type: MarkerType.ArrowClosed },
+        }));
 
-        // Deduplicate edges: one per source → target
-    const seen = new Set();
+    // 4️⃣ re-layout everything
+    const allNodes = [...nodes, ...newNodes];
+    const allEdges = [...edges, ...newEdges];
+    const { nodes: layoutedNodes, edges: layoutedEdges } =
+        getLayoutedElements(allNodes, allEdges);
 
-    const cleanedEdges = flow.edges
-      .filter((e) => {
-        const key = `${e.source}-${e.target}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .map((e) => ({
-        ...e,
-        type: 'smoothstep',
-        label: e.label,
-        sourceHandle: e.sourceHandle || undefined,  // 👈 preserve sourceHandle if provided
-        markerEnd: { type: MarkerType.ArrowClosed },
-      }));
-
-    const styledNodes = cleanedNodes.map((node) => {
-      const baseStyle = {
-        border: '1px solid #999',
-        borderRadius: 20,
-        padding: 10,
-        fontSize: '14px',
-        textAlign: 'center',
-      };
-    
-      switch (node.type) {
-        case 'start':
-        case 'end':
-          return {
-            ...node,
-            style: {
-              ...baseStyle,
-              backgroundColor: '#d1e7dd', // soft green
-              borderRadius: 30,
-            },
-          };
-    
-        case 'process':
-          return {
-            ...node,
-            style: {
-              ...baseStyle,
-              backgroundColor: '#e7f1ff', // soft blue
-            },
-          };
-        case 'decision':
-          return {
-            ...node,
-            style: {
-              borderRadius: '60%',
-            }
-            // No style needed — handled in DiamondNode
-          };
-    
-        case 'note':
-        case 'sticky':
-          return {
-            ...node,
-            // No style needed — handled in StickyNoteNode
-          };
-    
-        default:
-          return {
-            ...node,
-            style: {
-              ...baseStyle,
-              backgroundColor: '#f0e5ff', // fallback color
-            },
-          };
-      }
-    });
-        
-    console.log(styledNodes);
-    const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(styledNodes, cleanedEdges);
     setNodes(layoutedNodes);
     setEdges(layoutedEdges);
-    console.log(layoutedNodes);
-
   };
 
+  /* ------------------------------------------------------- */
+  /* Quick UI for testing: textarea simulates a new chunk     */
+  /* ------------------------------------------------------- */
+  const [chunkDraft, setChunkDraft] = useState(
+      'User uploads a file. System validates format.'
+  );
+
   return (
-    <div style={{ height: '100vh', width: '100%' }}>
-      <div style={{ padding: 10 }}>
+      <div style={{ height: '100vh', width: '100%' }}>
+        <div style={{ padding: 10 }}>
         <textarea
-          rows={4}
-          style={{ width: '80%' }}
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
+            rows={2}
+            style={{ width: '70%' }}
+            value={chunkDraft}
+            onChange={(e) => setChunkDraft(e.target.value)}
         />
-        <button onClick={handleSubmit} style={{ marginLeft: 10 }}>Generate Flowchart</button>
+          <button onClick={() => handleChunk(chunkDraft)} style={{ marginLeft: 10 }}>
+            ➕ Add Chunk
+          </button>
+        </div>
+
+        <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView>
+          <Background />
+          <Controls />
+        </ReactFlow>
       </div>
-      <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} fitView>
-        <Background />
-        <Controls />
-      </ReactFlow>
-    </div>
   );
 }
